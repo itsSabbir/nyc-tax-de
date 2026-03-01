@@ -1,0 +1,17 @@
+version: 2
+
+seeds:
+  - name: taxi_zone_lookup
+    description: "NYC Taxi Zone lookup mapping location_id -> borough/zone/service_zone."
+    columns:
+      - name: location_id
+        tests:
+          - not_null
+          - unique
+      - name: borough
+        tests:
+          - not_null
+      - name: zone
+        tests:
+          - not_null
+      - name: service_zone

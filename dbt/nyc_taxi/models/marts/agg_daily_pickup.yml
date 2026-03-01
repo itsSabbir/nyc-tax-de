@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: agg_daily_pickup
+    columns:
+      - name: pickup_date
+        tests: [not_null]
+
+      - name: borough
+        tests: [not_null]
+
+      - name: zone
+        tests: [not_null]
+
+      - name: trips
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 1"
+
+      - name: p95_distance
+        tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"

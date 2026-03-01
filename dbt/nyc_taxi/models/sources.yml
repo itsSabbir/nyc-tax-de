@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: staging
+    tables:
+      - name: yellow_trips_raw
+        description: "Raw NYC Yellow Taxi trips loaded from parquet into Postgres staging.yellow_trips_raw."
+        columns:
+          - name: tpep_pickup_datetime
+            tests: [not_null]
+          - name: tpep_dropoff_datetime
+            tests: [not_null]

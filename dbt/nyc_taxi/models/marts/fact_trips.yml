@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: fact_trips
+    description: "Trip-level fact table (Jan 2024) modeled from stg_yellow_trips."
+    columns:
+      - name: trip_id
+        tests:
+          - not_null
+          - unique
+
+      - name: pickup_ts
+        tests: [not_null]
+
+      - name: dropoff_ts
+        tests: [not_null]
+
+      - name: total_amount
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+
+      - name: trip_distance
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true

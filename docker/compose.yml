@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: de_postgres
+    environment:
+      POSTGRES_USER: de
+      POSTGRES_PASSWORD: de
+      POSTGRES_DB: warehouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: de_minio
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  airflow-init:
+    image: apache/airflow:2.9.3
+    container_name: de_airflow_init
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse
+    volumes:
+      - airflow_logs:/opt/airflow/logs
+      - airflow_dags:/opt/airflow/dags
+    command: >
+      bash -lc "
+      airflow db migrate &&
+      airflow users create
+        --username admin
+        --password admin
+        --firstname Admin
+        --lastname User
+        --role Admin
+        --email admin@example.com
+      "
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    container_name: de_airflow_web
+    depends_on:
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse
+
+      # "Wire repo": your code becomes visible inside container here:
+      REPO_ROOT: /opt/airflow/repo
+      _PIP_ADDITIONAL_REQUIREMENTS: "dbt-postgres==1.8.2"
+    ports:
+      - "8080:8080"
+    volumes:
+      - airflow_logs:/opt/airflow/logs
+      - airflow_dags:/opt/airflow/dags
+
+      # put your DAG file here:
+      - C:\Dev\GitHub\nyc-taxi-de\airflow\dags:/opt/airflow/dags
+
+      # this is the important "wire repo" mount:
+      - C:\Dev\GitHub\nyc-taxi-de:/opt/airflow/repo
+    command: webserver
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    container_name: de_airflow_sched
+    depends_on:
+      - airflow-webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse
+      REPO_ROOT: /opt/airflow/repo
+      _PIP_ADDITIONAL_REQUIREMENTS: "dbt-postgres==1.8.2"
+    volumes:
+      - airflow_logs:/opt/airflow/logs
+      - airflow_dags:/opt/airflow/dags
+      - C:\Dev\GitHub\nyc-taxi-de\airflow\dags:/opt/airflow/dags
+      - C:\Dev\GitHub\nyc-taxi-de:/opt/airflow/repo
+    command: scheduler
+
+volumes:
+  pgdata:
+  miniodata:
+  airflow_logs:
+  airflow_dags:

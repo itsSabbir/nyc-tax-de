@@ -56,4 +56,3 @@ with DAG(
     )
 
     ingest >> dbt_seed >> dbt_build >> sanity
-    

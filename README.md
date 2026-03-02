@@ -260,7 +260,7 @@ If your user/db differs, read it from `docker/compose.yml` and update the `-U` a
 
 ---
 
-## 13) Resume talking points (what you can claim from this repo)
+## 13) Resume + talking points (what I can claim from this repo + what I learned)
 
 | Skill area | Proof in this repo |
 |---|---|

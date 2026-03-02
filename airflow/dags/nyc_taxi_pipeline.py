@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 
-REPO_ROOT = os.getenv("REPO_ROOT", "/opt/airflow/repo")  # set this in docker compose
+REPO_ROOT = os.getenv("REPO_ROOT", "/opt/airflow/repo")
 DBT_DIR = f"{REPO_ROOT}/dbt/nyc_taxi"
 
 default_args = {
@@ -15,11 +16,30 @@ default_args = {
     "retry_delay": timedelta(minutes=2),
 }
 
+# New python function to replace the docker exec commands
+def run_sanity_checks():
+    import psycopg2
+    # Connect directly to the postgres container
+    conn = psycopg2.connect(host="postgres", user="de", password="de", dbname="warehouse")
+    cur = conn.cursor()
+    
+    cur.execute("select count(*) from analytics.fact_trips;")
+    print(f"Fact Trips count: {cur.fetchone()[0]}")
+    
+    cur.execute("select count(*) from analytics.dim_zone;")
+    print(f"Dim Zones count: {cur.fetchone()[0]}")
+    
+    cur.execute("select count(*) from analytics.agg_daily_pickup;")
+    print(f"Agg Daily Pickup count: {cur.fetchone()[0]}")
+    
+    cur.close()
+    conn.close()
+
 with DAG(
     dag_id="nyc_taxi_pipeline",
     default_args=default_args,
     start_date=datetime(2026, 1, 1),
-    schedule=None,  # keep manual for now; we schedule in a later step
+    schedule=None,  
     catchup=False,
     tags=["nyc", "taxi", "dbt"],
 ) as dag:
@@ -32,7 +52,10 @@ with DAG(
         ),
         env={
             "PARQUET_PATH": f"{REPO_ROOT}/data/raw/yellow_tripdata_2024-01.parquet",
-            # include PG_* env here if your ingest uses them and Airflow needs them
+            "PG_HOST": "postgres",
+            "PG_USER": "de",
+            "PG_PASS": "de",
+            "PG_DB": "warehouse"
         },
     )
 
@@ -46,13 +69,10 @@ with DAG(
         bash_command=f"cd {DBT_DIR} && dbt build",
     )
 
-    sanity = BashOperator(
+    # Replaced BashOperator with PythonOperator
+    sanity = PythonOperator(
         task_id="sanity_checks",
-        bash_command=(
-            'docker exec -i de_postgres psql -U de -d warehouse -c "select count(*) as trips from analytics.fact_trips;" && '
-            'docker exec -i de_postgres psql -U de -d warehouse -c "select count(*) as zones from analytics.dim_zone;" && '
-            'docker exec -i de_postgres psql -U de -d warehouse -c "select count(*) as rows from analytics.agg_daily_pickup;"'
-        ),
+        python_callable=run_sanity_checks,
     )
 
     ingest >> dbt_seed >> dbt_build >> sanity

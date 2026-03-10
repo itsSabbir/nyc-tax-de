@@ -5,7 +5,6 @@ This repository is a **local, end-to-end data engineering pipeline** that takes 
 It is designed to be:
 - **Explainable**: every layer maps to a common industry concept (bronze, silver, gold).
 - **Reproducible**: Docker Compose brings up the same environment every time.
-- **Resume-ready**: demonstrates ingestion, transformation, testing, orchestration, and operational checks.
 
 ---
 
@@ -248,7 +247,7 @@ If your user/db differs, read it from `docker/compose.yml` and update the `-U` a
 
 ---
 
-## 12) Roadmap (how to extend this into “production shaped”)
+## 12) Roadmap (future plans)
 
 | Upgrade | What you add | Why it’s valuable |
 |---|---|---|
@@ -260,7 +259,7 @@ If your user/db differs, read it from `docker/compose.yml` and update the `-U` a
 
 ---
 
-## 13) Resume + talking points (what I can claim from this repo + what I learned)
+## 13) What I learned
 
 | Skill area | Proof in this repo |
 |---|---|

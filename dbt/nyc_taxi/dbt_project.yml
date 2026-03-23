@@ -1,48 +1,79 @@
+# =============================================================================
+# dbt Project Configuration
+# =============================================================================
+# This is the "main config" for the dbt project. It tells dbt:
+#   - What the project is called
+#   - Which profile to use for database connections
+#   - Where to find models, seeds, tests, etc.
+#   - How to materialize models (as views vs. tables)
+#
+# IMPORTANT: This file must be at the ROOT of the dbt project (dbt/nyc_taxi/).
+# dbt uses this file's location to resolve all relative paths like "models/".
+# =============================================================================
 
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
+# Project name — used internally by dbt and must match the profile name
+# and the key under "models:" below. Only lowercase + underscores allowed.
 name: 'nyc_taxi'
 version: '1.0.0'
 
-# This setting configures which "profile" dbt uses for this project.
+# Which connection profile to use (defined in ../profiles.yml).
+# If this doesn't match a key in profiles.yml, you get "Profile not found".
 profile: 'nyc_taxi'
 
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
-model-paths: ["models"]
-analysis-paths: ["analyses"]
-test-paths: ["tests"]
-seed-paths: ["seeds"]
-macro-paths: ["macros"]
-snapshot-paths: ["snapshots"]
+# ---------------------------------------------------------------------------
+# PATH CONFIGURATION
+# ---------------------------------------------------------------------------
+# These tell dbt where to look for different types of files, all relative
+# to THIS file's location (dbt/nyc_taxi/).
+# You almost never need to change these — they're the dbt defaults.
+# ---------------------------------------------------------------------------
+model-paths: ["models"]         # SQL models that create views/tables
+analysis-paths: ["analyses"]    # Ad-hoc analysis SQL (not materialized)
+test-paths: ["tests"]           # Custom test SQL files
+seed-paths: ["seeds"]           # CSV files loaded as tables (taxi_zone_lookup.csv)
+macro-paths: ["macros"]         # Reusable SQL snippets (like functions)
+snapshot-paths: ["snapshots"]   # Slowly changing dimension snapshots
 
-clean-targets:         # directories to be removed by `dbt clean`
-  - "target"
-  - "dbt_packages"
+# Folders that "dbt clean" will delete (safe to regenerate)
+clean-targets:
+  - "target"           # Compiled SQL + run artifacts
+  - "dbt_packages"     # Downloaded packages (like dbt_utils)
 
-
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
-
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
+# ---------------------------------------------------------------------------
+# MODEL MATERIALIZATION STRATEGY
+# ---------------------------------------------------------------------------
+# "Materialization" = how dbt creates the model in the database.
+#   - view:  CREATE VIEW — just a saved query, no data stored. Fast to build,
+#            but slow to query because it re-runs the SQL every time.
+#   - table: CREATE TABLE AS SELECT — actually stores the data. Slower to
+#            build, but fast to query. Use for anything downstream consumers
+#            will query directly.
+#
+# Our strategy:
+#   - staging/ models = views (intermediate, not queried directly)
+#   - marts/ models = tables (final outputs, queried by analysts/dashboards)
+# ---------------------------------------------------------------------------
 models:
   nyc_taxi:
-    +materialized: view
+    +materialized: view          # Default for all models: create as views
     staging:
-      +materialized: view
+      +materialized: view        # Staging = views (just cleaning/renaming)
     marts:
-      +materialized: table
+      +materialized: table       # Marts = tables (final analytics-ready data)
 
+# ---------------------------------------------------------------------------
+# SEED CONFIGURATION
+# ---------------------------------------------------------------------------
+# Seeds = CSV files that dbt loads as database tables. We configure column
+# types here because dbt's auto-detection sometimes gets them wrong
+# (e.g., it might treat location_id as text instead of integer).
+# ---------------------------------------------------------------------------
 seeds:
   nyc_taxi:
-    +quote_columns: false
+    +quote_columns: false        # Don't wrap column names in quotes
     taxi_zone_lookup:
       +column_types:
-        location_id: integer
-        borough: text
-        zone: text
-        service_zone: text
+        location_id: integer     # Zone ID number (used as join key)
+        borough: text            # e.g., Manhattan, Brooklyn, Queens
+        zone: text               # e.g., Upper East Side North
+        service_zone: text       # e.g., Yellow Zone, Boro Zone

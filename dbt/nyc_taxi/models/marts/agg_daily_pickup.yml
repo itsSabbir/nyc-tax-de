@@ -1,26 +1,37 @@
+# =============================================================================
+# Tests for agg_daily_pickup
+# =============================================================================
+# These tests ensure the daily aggregate table makes sense:
+#   - Every row has a date, borough, and zone (no mystery rows)
+#   - Trip counts are at least 1 (a group with 0 trips shouldn't exist)
+#   - p95 distance is non-negative (sanity check on the percentile calc)
+# =============================================================================
+
 version: 2
 
 models:
   - name: agg_daily_pickup
     columns:
       - name: pickup_date
-        tests: [not_null]
+        tests: [not_null]     # Every aggregate row must have a date
 
       - name: borough
-        tests: [not_null]
+        tests: [not_null]     # Borough should always be filled (we COALESCE to 'Unknown')
 
       - name: zone
-        tests: [not_null]
+        tests: [not_null]     # Zone should always be filled (we COALESCE to 'Unknown')
 
       - name: trips
         tests:
           - not_null
+          # expression_is_true runs a SQL expression against each row.
+          # If any row has trips < 1, the test fails.
           - dbt_utils.expression_is_true:
               arguments:
-                expression: ">= 1"
+                expression: ">= 1"    # Every group must have at least 1 trip
 
       - name: p95_distance
         tests:
           - dbt_utils.expression_is_true:
               arguments:
-                expression: ">= 0"
+                expression: ">= 0"    # Distance can't be negative

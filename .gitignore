@@ -1,4 +1,15 @@
+# =============================================================================
+# Git Ignore: Files that should NOT be committed to the repository
+# =============================================================================
+
+# Python virtual environment (large, machine-specific)
 .venv/
+
+# Python bytecode cache (auto-generated, not useful in git)
 **/__pycache__/
+
+# Raw data files — too large for git (download separately or use DVC/LFS)
 data/raw/
+
+# dbt logs — generated on every run, not useful to track
 dbt/logs/

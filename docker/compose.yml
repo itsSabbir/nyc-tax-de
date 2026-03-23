@@ -1,44 +1,86 @@
-services:
-  postgres:
-    image: postgres:16
-    container_name: de_postgres
-    environment:
-      POSTGRES_USER: de
-      POSTGRES_PASSWORD: de
-      POSTGRES_DB: warehouse
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+# =============================================================================
+# Docker Compose for NYC Taxi Data Engineering Pipeline
+# =============================================================================
+# This file defines ALL the services (containers) we need to run the pipeline:
+#   - postgres:          Our data warehouse (where all the tables live)
+#   - minio:             S3-compatible object storage (for future lakehouse work)
+#   - airflow-init:      One-time setup container that creates the Airflow DB + admin user
+#   - airflow-webserver: The Airflow UI you open in your browser (localhost:8080)
+#   - airflow-scheduler: The background process that actually runs your DAGs on schedule
+#
+# HOW TO RUN:
+#   docker compose -f docker/compose.yml up -d
+#
+# HOW TO STOP:
+#   docker compose -f docker/compose.yml down
+#
+# HOW TO NUKE EVERYTHING (including data):
+#   docker compose -f docker/compose.yml down -v
+# =============================================================================
 
+services:
+
+  # ---------------------------------------------------------------------------
+  # POSTGRES — Our local data warehouse
+  # ---------------------------------------------------------------------------
+  # This is where ALL the data lives: bronze (staging), silver, and gold tables.
+  # We use Postgres instead of something like BigQuery or Snowflake because
+  # it's free, runs locally, and the SQL is almost identical.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16                    # Official Postgres 16 image from Docker Hub
+    container_name: de_postgres           # Friendly name so we can do: docker exec -it de_postgres ...
+    environment:
+      POSTGRES_USER: de                   # Username for connecting (used everywhere in the pipeline)
+      POSTGRES_PASSWORD: de               # Password — fine for local dev, NEVER do this in production
+      POSTGRES_DB: warehouse              # The database name our pipeline writes to
+    ports:
+      - "5432:5432"                       # Expose Postgres on the default port so local tools can connect
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # Named volume = data survives container restarts
+
+  # ---------------------------------------------------------------------------
+  # MINIO — S3-compatible object storage (optional, for future lakehouse work)
+  # ---------------------------------------------------------------------------
+  # Think of this as a local version of AWS S3. Right now we don't actively
+  # use it in the pipeline, but it's here so you can extend the project to
+  # land raw Parquet files in object storage before loading to Postgres.
+  # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
     container_name: de_minio
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio12345
-    command: server /data --console-address ":9001"
+      MINIO_ROOT_USER: minio             # Like an AWS access key
+      MINIO_ROOT_PASSWORD: minio12345    # Like an AWS secret key
+    command: server /data --console-address ":9001"   # Start MinIO with a web console
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000"                      # API port (where code talks to MinIO)
+      - "9001:9001"                      # Console port (web UI at localhost:9001)
     volumes:
-      - miniodata:/data
+      - miniodata:/data                  # Persist uploaded files across restarts
 
+  # ---------------------------------------------------------------------------
+  # AIRFLOW-INIT — One-time bootstrap (creates DB tables + admin user)
+  # ---------------------------------------------------------------------------
+  # This container runs ONCE, sets up Airflow's internal database tables,
+  # creates the admin login, and then exits. It's like running "npm install"
+  # for Airflow — you need it before anything else works.
+  # ---------------------------------------------------------------------------
   airflow-init:
     build:
-      context: .
-      dockerfile: airflow/Dockerfile
+      context: .                         # Build context is the docker/ folder
+      dockerfile: airflow/Dockerfile     # Our custom Dockerfile that adds dbt
     container_name: de_airflow_init
     depends_on:
-      - postgres
+      - postgres                         # Needs Postgres running first (Airflow stores its metadata there)
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor                # Single-machine executor (no Celery/Redis needed)
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"    # New DAGs start paused so they don't auto-run
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"                 # Don't clutter the UI with Airflow's example DAGs
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse  # Airflow metadata DB
     volumes:
-      - airflow_logs:/opt/airflow/logs
-      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs   # Persist Airflow task logs
+      - airflow_dags:/opt/airflow/dags   # Shared DAGs volume
     command: >
       bash -lc "
       airflow db migrate &&
@@ -50,37 +92,64 @@ services:
         --role Admin
         --email admin@example.com
       "
+      # ^ First: migrate (create/update Airflow's internal tables)
+      #   Then: create an admin user so you can log into the web UI
 
+  # ---------------------------------------------------------------------------
+  # AIRFLOW-WEBSERVER — The web UI (localhost:8080)
+  # ---------------------------------------------------------------------------
+  # This is what you open in your browser. You can see your DAGs, trigger
+  # runs, view logs, and monitor task progress here.
+  # Login: admin / admin
+  # ---------------------------------------------------------------------------
   airflow-webserver:
     build:
       context: .
       dockerfile: airflow/Dockerfile
     container_name: de_airflow_web
     depends_on:
-      - airflow-init
+      - airflow-init                     # Wait for init to finish setting up the DB
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"   # Auto-enable DAGs here so they show as active
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://de:de@postgres:5432/warehouse
-      DBT_PROFILES_DIR: /opt/airflow/repo/dbt
-      REPO_ROOT: /opt/airflow/repo
+      # These two env vars tell our DAG where to find things INSIDE the container:
+      DBT_PROFILES_DIR: /opt/airflow/repo/dbt               # Where dbt looks for profiles.yml
+      REPO_ROOT: /opt/airflow/repo                           # Root of our project inside the container
     ports:
-      - "8080:8080"
+      - "8080:8080"                      # Airflow UI at http://localhost:8080
     volumes:
       - airflow_logs:/opt/airflow/logs
       - airflow_dags:/opt/airflow/dags
-      - C:\Dev\GitHub\nyc-taxi-de\airflow\dags:/opt/airflow/dags
-      - C:\Dev\GitHub\nyc-taxi-de:/opt/airflow/repo
+      # -----------------------------------------------------------------------
+      # IMPORTANT: These bind mounts connect YOUR LOCAL project folder into the
+      # container. This is how the container sees your DAG files and dbt project.
+      #
+      # The left side (before the colon) is the path ON YOUR WINDOWS MACHINE.
+      # The right side (after the colon) is where it appears INSIDE the container.
+      #
+      # If you move the project folder, UPDATE THESE PATHS or Airflow won't
+      # find your DAGs and dbt won't find your models.
+      # -----------------------------------------------------------------------
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de\airflow\dags:/opt/airflow/dags
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de:/opt/airflow/repo
     command: webserver
 
+  # ---------------------------------------------------------------------------
+  # AIRFLOW-SCHEDULER — The background worker that runs your tasks
+  # ---------------------------------------------------------------------------
+  # The scheduler is the "engine" of Airflow. It watches for DAGs that need
+  # to run, queues up their tasks, and executes them. Without this, nothing
+  # actually happens — the webserver is just the UI.
+  # ---------------------------------------------------------------------------
   airflow-scheduler:
     build:
       context: .
       dockerfile: airflow/Dockerfile
     container_name: de_airflow_sched
     depends_on:
-      - airflow-webserver
+      - airflow-webserver                # Start after the webserver is up
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -90,12 +159,19 @@ services:
     volumes:
       - airflow_logs:/opt/airflow/logs
       - airflow_dags:/opt/airflow/dags
-      - C:\Dev\GitHub\nyc-taxi-de\airflow\dags:/opt/airflow/dags
-      - C:\Dev\GitHub\nyc-taxi-de:/opt/airflow/repo
+      # Same bind mounts as the webserver — scheduler needs access to the same files
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de\airflow\dags:/opt/airflow/dags
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de:/opt/airflow/repo
     command: scheduler
 
+# =============================================================================
+# NAMED VOLUMES
+# =============================================================================
+# Named volumes are managed by Docker. Data in them survives container restarts
+# but gets destroyed if you run "docker compose down -v".
+# =============================================================================
 volumes:
-  pgdata:
-  miniodata:
-  airflow_logs:
-  airflow_dags:
+  pgdata:          # Postgres data files (your actual warehouse tables)
+  miniodata:       # MinIO object storage data
+  airflow_logs:    # Airflow task execution logs
+  airflow_dags:    # Shared DAGs directory

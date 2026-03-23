@@ -1,17 +1,32 @@
+# =============================================================================
+# Seed Tests: taxi_zone_lookup
+# =============================================================================
+# Seeds are CSV files that dbt loads as database tables. This file defines
+# tests for the taxi_zone_lookup seed to make sure the CSV data is valid.
+#
+# The taxi_zone_lookup.csv maps zone IDs to human-readable names. It comes
+# from the NYC Taxi & Limousine Commission (TLC) and has ~265 rows — one
+# for each taxi zone in NYC.
+#
+# These tests run when you execute "dbt build" or "dbt test".
+# =============================================================================
+
 version: 2
 
 seeds:
   - name: taxi_zone_lookup
-    description: "NYC Taxi Zone lookup mapping location_id -> borough/zone/service_zone."
+    description: >
+      NYC Taxi Zone lookup table mapping location_id to borough, zone name,
+      and service zone. Used as the source for dim_zone.
     columns:
       - name: location_id
         tests:
-          - not_null
-          - unique
+          - not_null         # Every zone must have an ID
+          - unique           # No duplicate zone IDs
       - name: borough
         tests:
-          - not_null
+          - not_null         # Every zone belongs to a borough
       - name: zone
         tests:
-          - not_null
-      - name: service_zone
+          - not_null         # Every zone has a name
+      - name: service_zone   # Some zones have NULL service_zone, so no not_null test

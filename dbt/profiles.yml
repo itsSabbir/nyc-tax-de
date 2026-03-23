@@ -1,12 +1,31 @@
+# =============================================================================
+# dbt Profiles: Database Connection Configuration
+# =============================================================================
+# This file tells dbt HOW TO CONNECT to your database. Think of it like a
+# database connection string, but in YAML format.
+#
+# IMPORTANT: This file lives OUTSIDE the dbt project folder (dbt/profiles.yml,
+# not dbt/nyc_taxi/profiles.yml). This is intentional — it keeps credentials
+# separate from project code, which is a security best practice.
+#
+# When running dbt, you need to point to this file:
+#   dbt build --profiles-dir ../   (if you're inside dbt/nyc_taxi/)
+#   dbt build --profiles-dir dbt   (if you're at the repo root)
+#
+# The profile name "nyc_taxi" must match the "profile:" setting in dbt_project.yml.
+# If they don't match, dbt throws a "Profile not found" error.
+# =============================================================================
+
 nyc_taxi:
-  target: dev
+  target: dev                  # Which output to use by default (we only have "dev")
   outputs:
     dev:
-      type: postgres
-      host: postgres
-      user: de
-      password: de
-      port: 5432
-      dbname: warehouse
-      schema: analytics
-      threads: 4
+      type: postgres           # Database engine (could also be bigquery, snowflake, etc.)
+      host: postgres           # Hostname — "postgres" is the Docker service name
+                               # (Docker DNS resolves this to the container's IP)
+      user: de                 # Must match POSTGRES_USER in compose.yml
+      password: de             # Must match POSTGRES_PASSWORD in compose.yml
+      port: 5432               # Default Postgres port
+      dbname: warehouse        # Must match POSTGRES_DB in compose.yml
+      schema: analytics        # dbt creates all models in this schema by default
+      threads: 4               # How many models to build in parallel (speed boost)

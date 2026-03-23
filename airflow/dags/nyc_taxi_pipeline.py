@@ -83,6 +83,15 @@ def run_sanity_checks():
     cur.execute("select count(*) from analytics.agg_daily_pickup;")
     print(f"Agg Daily Pickup count: {cur.fetchone()[0]}")
 
+    # Quick check: how many distinct months of data do we have?
+    # This confirms all 12 months loaded successfully.
+    cur.execute("""
+        select count(distinct date_trunc('month', pickup_ts))
+        from analytics.fact_trips;
+    """)
+    month_count = cur.fetchone()[0]
+    print(f"Distinct months in fact_trips: {month_count}")
+
     cur.close()
     conn.close()
 
@@ -108,12 +117,14 @@ with DAG(
     # -----------------------------------------------------------------------
     # TASK 1: Ingest raw parquet data into Postgres (bronze layer)
     # -----------------------------------------------------------------------
-    # Runs our Python script that reads the parquet file, cleans it lightly,
-    # and bulk-inserts it into staging.yellow_trips_raw.
+    # Runs our Python script that reads ALL parquet files from data/raw/,
+    # cleans them lightly, and bulk-inserts into staging.yellow_trips_raw.
+    #
+    # PARQUET_DIR tells the script to load every .parquet file in the folder
+    # (instead of a single file). TRUNCATE=true means it wipes the table
+    # first, so this is a full reload every time.
     #
     # The 'env' dict passes environment variables TO the bash command.
-    # Our Python script reads these with os.getenv() to know where the
-    # parquet file is and how to connect to Postgres.
     # -----------------------------------------------------------------------
     ingest = BashOperator(
         task_id="ingest_yellow_to_pg",
@@ -122,11 +133,12 @@ with DAG(
             "python ingest/load_yellow_to_pg.py"      # then run the ingest script
         ),
         env={
-            "PARQUET_PATH": f"{REPO_ROOT}/data/raw/yellow_tripdata_2024-01.parquet",
-            "PG_HOST": "postgres",     # Docker service name
+            "PARQUET_DIR": f"{REPO_ROOT}/data/raw",   # Load ALL parquet files in this folder
+            "TRUNCATE": "true",                        # Wipe table before loading (full reload)
+            "PG_HOST": "postgres",                     # Docker service name
             "PG_USER": "de",
             "PG_PASS": "de",
-            "PG_DB": "warehouse"
+            "PG_DB": "warehouse",
         },
     )
 

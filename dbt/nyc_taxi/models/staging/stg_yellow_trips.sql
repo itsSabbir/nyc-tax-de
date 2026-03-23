@@ -61,10 +61,11 @@ clean as (
       and tpep_dropoff_datetime >= tpep_pickup_datetime  -- Can't drop off before pickup
       and coalesce(trip_distance, 0) >= 0             -- No negative distances
       and coalesce(total_amount, 0) >= 0              -- No negative amounts
-      -- Date filter: only keep January 2024 (matches our current parquet file).
-      -- When you add more months, update or remove these bounds.
+      -- Date filter: keep all of 2024 (matches our downloaded parquet files).
+      -- This prevents stale data from other years from leaking in if someone
+      -- accidentally loads an old file. Widen these bounds if you add more years.
       and tpep_pickup_datetime >= '2024-01-01'::timestamp
-      and tpep_pickup_datetime <  '2024-02-01'::timestamp
+      and tpep_pickup_datetime <  '2025-01-01'::timestamp
 )
 
 select * from clean

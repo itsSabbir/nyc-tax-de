@@ -2,12 +2,17 @@
 # Ingestion Script: Load NYC Yellow Taxi Parquet into Postgres (Bronze Layer)
 # =============================================================================
 # This script is the "E" and "L" in ELT (Extract + Load):
-#   1. EXTRACT: Read a .parquet file (columnar format, very fast)
+#   1. EXTRACT: Read .parquet files (columnar format, very fast)
 #   2. CLEAN:   Light data quality fixes (null timestamps, negative amounts)
 #   3. LOAD:    Bulk insert into Postgres table: staging.yellow_trips_raw
 #
 # The "T" (Transform) happens later in dbt — we intentionally keep this
 # script simple and push complex logic into SQL where it's easier to test.
+#
+# MODES OF OPERATION:
+#   Single file:  Set PARQUET_PATH env var to load one specific file
+#   Multi-file:   Set PARQUET_DIR env var to load ALL .parquet files in a folder
+#   Default:      Loads all files from data/raw/ (relative to project root)
 #
 # HOW THIS GETS CALLED:
 #   - By Airflow (Task 1 in the DAG) with env vars for paths + credentials
@@ -15,16 +20,22 @@
 #   - Manually: python ingest/load_yellow_to_pg.py
 #
 # ENVIRONMENT VARIABLES (all optional, have sensible defaults):
-#   PARQUET_PATH  — path to the .parquet file to load
+#   PARQUET_PATH  — path to a SINGLE .parquet file to load (overrides PARQUET_DIR)
+#   PARQUET_DIR   — path to a FOLDER of .parquet files to load all of them
 #   PG_HOST       — Postgres hostname (default: localhost for local, "postgres" in Docker)
 #   PG_PORT       — Postgres port (default: 5432)
 #   PG_DB         — database name (default: warehouse)
 #   PG_USER       — database user (default: de)
 #   PG_PASS       — database password (default: de)
 #   CHUNK_SIZE    — rows per insert batch (default: 50000)
+#   TRUNCATE      — set to "true" to wipe the table before loading (default: true)
 # =============================================================================
 
+import glob
 import os
+import sys
+from pathlib import Path
+
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
@@ -42,10 +53,20 @@ PG_DB   = os.getenv("PG_DB", "warehouse")
 PG_USER = os.getenv("PG_USER", "de")
 PG_PASS = os.getenv("PG_PASS", "de")
 
-# Path to the raw parquet file. The default uses a Windows-style relative
-# path for running locally. When Airflow calls this, it overrides with an
-# absolute Linux path inside the container.
-PARQUET_PATH = os.getenv("PARQUET_PATH", r"data\raw\yellow_tripdata_2024-01.parquet")
+# ---------------------------------------------------------------------------
+# FILE DISCOVERY
+# ---------------------------------------------------------------------------
+# Priority order for finding parquet files:
+#   1. PARQUET_PATH  — load one specific file (backwards compatible)
+#   2. PARQUET_DIR   — load all .parquet files in a folder
+#   3. Default       — data/raw/ relative to the project root
+# ---------------------------------------------------------------------------
+PARQUET_PATH = os.getenv("PARQUET_PATH")
+PARQUET_DIR  = os.getenv("PARQUET_DIR")
+
+# Whether to truncate the target table before loading. Set to "false" to
+# append instead (useful when loading files one at a time in a loop).
+TRUNCATE = os.getenv("TRUNCATE", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # COLUMN CONFIGURATION
@@ -87,6 +108,39 @@ TARGET_COLS_SQL = """
 (vendor_id, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count,
  trip_distance, fare_amount, tip_amount, total_amount, pu_location_id, do_location_id)
 """
+
+
+def discover_parquet_files() -> list[str]:
+    """
+    Figure out which parquet files to load based on env vars.
+
+    Returns a sorted list of file paths. Sorting ensures files are loaded
+    in chronological order (yellow_tripdata_2024-01 before 2024-02, etc.)
+    which makes logs easier to follow.
+    """
+    # Option 1: Single file explicitly specified
+    if PARQUET_PATH:
+        if not os.path.exists(PARQUET_PATH):
+            print(f"ERROR: PARQUET_PATH does not exist: {PARQUET_PATH}")
+            sys.exit(1)
+        return [PARQUET_PATH]
+
+    # Option 2: Directory of parquet files
+    search_dir = PARQUET_DIR
+    if not search_dir:
+        # Default: data/raw/ relative to this script's parent (the project root)
+        search_dir = str(Path(__file__).resolve().parent.parent / "data" / "raw")
+
+    # Find all .parquet files in the directory
+    pattern = os.path.join(search_dir, "*.parquet")
+    files = sorted(glob.glob(pattern))
+
+    if not files:
+        print(f"ERROR: No .parquet files found in: {search_dir}")
+        print(f"       Run 'python scripts/download_data.py' to download the data first.")
+        sys.exit(1)
+
+    return files
 
 
 def coerce_types(df: pd.DataFrame) -> pd.DataFrame:
@@ -152,66 +206,95 @@ def chunker(seq_len: int, chunk_size: int):
         yield start, min(start + chunk_size, seq_len)
 
 
-def main() -> None:
+def load_single_file(filepath: str, conn, chunk_size: int) -> int:
     """
-    Main pipeline: read parquet -> clean -> bulk insert into Postgres.
+    Load one parquet file into staging.yellow_trips_raw.
 
-    Key design decisions:
-      - TRUNCATE before insert: makes this script idempotent (safe to re-run)
-      - Single transaction: if anything fails mid-insert, the whole thing
-        rolls back cleanly (no partial data in the table)
-      - Chunked inserts: memory-friendly and shows progress as it goes
+    Returns the number of rows loaded. Each file is loaded in its own
+    sub-transaction so that a failure on file 6 of 12 doesn't lose
+    the work from files 1-5.
     """
-    print(f"Reading parquet: {PARQUET_PATH}")
-    df = pd.read_parquet(PARQUET_PATH, columns=COLS)
+    filename = os.path.basename(filepath)
+    print(f"\n{'='*60}")
+    print(f"Loading: {filename}")
+    print(f"{'='*60}")
+
+    df = pd.read_parquet(filepath, columns=COLS)
+    raw_count = len(df)
 
     df = coerce_types(df)
     df = clean(df)
+    clean_count = len(df)
 
-    # Replace pandas NA/NaT with Python None so psycopg2 can handle them.
-    # Without this, you get "can't adapt type NAType" errors.
+    dropped = raw_count - clean_count
+    print(f"  Rows in file:    {raw_count:>10,}")
+    print(f"  After cleaning:  {clean_count:>10,}  (dropped {dropped:,} bad rows)")
+
+    # Replace pandas NA/NaT with Python None so psycopg2 can handle them
     df = df.replace({pd.NA: None})
 
-    # Connect to Postgres with autocommit OFF so we get a single transaction
+    with conn.cursor() as cur:
+        for start, end in chunker(clean_count, chunk_size):
+            chunk = df.iloc[start:end]
+            rows = chunk.where(pd.notnull(chunk), None).astype(object).values.tolist()
+
+            execute_values(
+                cur,
+                f"insert into staging.yellow_trips_raw {TARGET_COLS_SQL} values %s",
+                rows,
+                page_size=10_000,
+            )
+            print(f"  Inserted {end:>10,} / {clean_count:,}")
+
+    conn.commit()
+    print(f"  Committed {clean_count:,} rows from {filename}")
+    return clean_count
+
+
+def main() -> None:
+    """
+    Main pipeline: discover files -> optionally truncate -> load each file.
+
+    Key design decisions:
+      - TRUNCATE before loading (when TRUNCATE=true): makes the full run
+        idempotent — safe to re-run from scratch at any time
+      - Each file committed separately: if file 6 of 12 fails, you keep
+        files 1-5 and can resume from file 6
+      - Files are loaded in sorted order: chronological and predictable
+    """
+    files = discover_parquet_files()
+    print(f"Found {len(files)} parquet file(s) to load")
+    for f in files:
+        print(f"  - {os.path.basename(f)}")
+
+    chunk_size = int(os.getenv("CHUNK_SIZE", "50000"))
+
+    # Connect to Postgres
     conn = psycopg2.connect(
         host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASS
     )
     conn.autocommit = False
 
-    total = len(df)
-    chunk_size = int(os.getenv("CHUNK_SIZE", "50000"))
-
     try:
-        with conn.cursor() as cur:
-            # Truncate = delete all existing rows.
-            # This makes the script safe to re-run (idempotent).
-            # For production, you'd use an upsert or partitioned approach instead.
-            cur.execute("truncate table staging.yellow_trips_raw;")
+        # Optionally truncate before loading (default: yes)
+        if TRUNCATE:
+            with conn.cursor() as cur:
+                cur.execute("truncate table staging.yellow_trips_raw;")
+            conn.commit()
+            print("\nTruncated staging.yellow_trips_raw")
 
-            print(f"Inserting {total:,} rows in chunks of {chunk_size:,}")
+        # Load each file
+        total_rows = 0
+        for filepath in files:
+            rows = load_single_file(filepath, conn, chunk_size)
+            total_rows += rows
 
-            for start, end in chunker(total, chunk_size):
-                chunk = df.iloc[start:end]
+        # Final summary
+        print(f"\n{'='*60}")
+        print(f"DONE: Loaded {total_rows:,} total rows from {len(files)} file(s)")
+        print(f"{'='*60}")
 
-                # Convert pandas types to plain Python types (int, float, datetime, None)
-                # because psycopg2 doesn't understand pandas' special types like Int64
-                rows = chunk.where(pd.notnull(chunk), None).astype(object).values.tolist()
-
-                # execute_values is much faster than executemany for bulk inserts.
-                # page_size controls how many rows are sent per round-trip to Postgres.
-                execute_values(
-                    cur,
-                    f"insert into staging.yellow_trips_raw {TARGET_COLS_SQL} values %s",
-                    rows,
-                    page_size=10_000,
-                )
-                print(f"Inserted {end:,}/{total:,}")
-
-        # If we made it here without errors, commit the whole transaction
-        conn.commit()
-        print(f"Loaded {total:,} rows into staging.yellow_trips_raw")
     finally:
-        # Always close the connection, even if something crashed
         conn.close()
 
 

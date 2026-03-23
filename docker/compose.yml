@@ -134,6 +134,9 @@ services:
       # -----------------------------------------------------------------------
       - C:\Dev\GitHub\data-engineering\nyc-taxi-de\airflow\dags:/opt/airflow/dags
       - C:\Dev\GitHub\data-engineering\nyc-taxi-de:/opt/airflow/repo
+      # Mount the raw data folder so the ingest script can read parquet files
+      # inside the container (Airflow runs tasks inside Docker, not on your machine)
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de\data\raw:/opt/airflow/repo/data/raw
     command: webserver
 
   # ---------------------------------------------------------------------------
@@ -162,6 +165,7 @@ services:
       # Same bind mounts as the webserver — scheduler needs access to the same files
       - C:\Dev\GitHub\data-engineering\nyc-taxi-de\airflow\dags:/opt/airflow/dags
       - C:\Dev\GitHub\data-engineering\nyc-taxi-de:/opt/airflow/repo
+      - C:\Dev\GitHub\data-engineering\nyc-taxi-de\data\raw:/opt/airflow/repo/data/raw
     command: scheduler
 
 # =============================================================================

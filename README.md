@@ -16,7 +16,7 @@ It is designed to be:
 | Target audience | Analytics engineers, data analysts, product, ops, and anyone needing daily taxi demand and revenue signals |
 | Primary outputs | `analytics.fact_trips` (trip-level fact), `analytics.dim_zone` (zone dimension), `analytics.agg_daily_pickup` (daily metrics) |
 | Example questions answered | “How many trips per day by borough?”, “Average fare trends?”, “p95 trip distance changes?” |
-| Processing mode | Batch (single month demo), easy to extend to daily/hourly partitions |
+| Processing mode | Batch (full year 2024, 12 monthly parquet files), extensible to daily/hourly |
 | Quality controls | dbt schema tests (unique, not_null, accepted ranges) + final sanity rowcount queries |
 
 ---
@@ -100,6 +100,7 @@ nyc-taxi-de/
 ├── ingest/
 │   └── load_yellow_to_pg.py
 ├── scripts/
+│   ├── download_data.py
 │   └── run_pipeline.ps1
 ├── .gitignore
 └── README.md
@@ -113,7 +114,7 @@ nyc-taxi-de/
 | `ingest/` | Extract + Load (EL) | Python code that reads Parquet and loads Postgres bronze |
 | `dbt/nyc_taxi/` | Transform + Test (T) | dbt models, seeds, schema tests, lineage |
 | `airflow/dags/` | Orchestration | DAG definition, task order, retries, scheduling |
-| `scripts/` | Operations | “one click” local execution, smoke tests, runbook helpers |
+| `scripts/` | Operations | Data download, “one click” local execution, smoke tests, runbook helpers |
 
 ---
 
@@ -124,16 +125,24 @@ nyc-taxi-de/
 | Requirement | Why |
 |---|---|
 | Docker Desktop | Runs Postgres + Airflow + (optional) MinIO locally |
+| Python 3.10+ | Runs ingest and download scripts |
 | PowerShell | Runs `scripts/run_pipeline.ps1` (Windows path) |
-| NYC Taxi Parquet file | Source dataset for ingest step |
+| dbt-postgres | Installed locally or in a venv (`pip install dbt-postgres`) |
 
 ### Step-by-step run
 
 | Step | Command | Expected outcome |
 |---|---|---|
-| 1) Start all services | `docker compose -f docker/compose.yml up -d` | Containers running (Postgres, Airflow, MinIO) |
-| 2) Run full pipeline (local) | `powershell -ExecutionPolicy Bypass -File scripts/run_pipeline.ps1` | Ingest loads bronze, dbt seeds, dbt builds models, sanity queries pass |
-| 3) Verify final tables | See verification queries below | Non-zero counts, sensible daily aggregates |
+| 1) Download data | `python scripts/download_data.py` | 12 parquet files in `data/raw/` (~600 MB total) |
+| 2) Start all services | `docker compose -f docker/compose.yml up -d` | Containers running (Postgres, Airflow, MinIO) |
+| 3) Run full pipeline (local) | `powershell -ExecutionPolicy Bypass -File scripts/run_pipeline.ps1` | Ingest loads 12 months, dbt seeds, dbt builds, sanity queries pass |
+| 4) Verify final tables | See verification queries below | Non-zero counts, 12 distinct months, sensible daily aggregates |
+
+To download only a subset of months (e.g., for a quick test):
+
+```bash
+python scripts/download_data.py --months 1 2 3
+```
 
 ---
 
@@ -200,10 +209,12 @@ docker exec -it de_airflow_web bash -lc "
 | Topic | What it does | Why it exists |
 |---|---|---|
 | Column projection | Reads only needed columns | Reduces memory and load time |
+| Multi-file loading | Discovers and loads all `.parquet` files in `data/raw/` | Supports 1 month or 12 months with zero code changes |
 | Type coercion | Normalizes timestamps, numerics | Prevents downstream cast issues in dbt |
 | Row filtering | Drops null timestamps; removes negative values | Enforces basic data sanity early |
 | Bulk insert | Uses `execute_values` in batches | High throughput load pattern |
-| Idempotency model | Truncates bronze table before insert | Safe for full reload demos; not historical accumulation |
+| Per-file commits | Each file committed separately | If file 6 of 12 fails, you keep files 1-5 |
+| Idempotency model | Truncates bronze table before insert (configurable) | Safe for full reload demos; set `TRUNCATE=false` to append |
 
 If you want history later: change truncate to partitioned loads + dedupe keys.
 
@@ -229,7 +240,8 @@ docker exec -it de_postgres psql -U de -d warehouse -c "select count(*) from sta
 docker exec -it de_postgres psql -U de -d warehouse -c "select count(*) from analytics.stg_yellow_trips;"
 docker exec -it de_postgres psql -U de -d warehouse -c "select count(*) from analytics.fact_trips;"
 docker exec -it de_postgres psql -U de -d warehouse -c "select count(*) from analytics.dim_zone;"
-docker exec -it de_postgres psql -U de -d warehouse -c "select * from analytics.agg_daily_pickup order by pickup_day limit 20;"
+docker exec -it de_postgres psql -U de -d warehouse -c "select * from analytics.agg_daily_pickup order by pickup_date limit 20;"
+docker exec -it de_postgres psql -U de -d warehouse -c "select count(distinct date_trunc('month', pickup_ts)) as months_loaded from analytics.fact_trips;"
 ```
 
 If your user/db differs, read it from `docker/compose.yml` and update the `-U` and `-d`.
@@ -243,7 +255,8 @@ If your user/db differs, read it from `docker/compose.yml` and update the `-U` a
 | VS Code shows `Import "airflow..." could not be resolved` | Pylance is using your local Python, not the Docker Airflow Python | Attach VS Code to the running container (Dev Containers) or silence missing-import diagnostics |
 | dbt seed not found | Ran dbt from `dbt/` instead of `dbt/nyc_taxi/` | Use `--project-dir dbt/nyc_taxi --profiles-dir dbt` |
 | Airflow UI shows no DAG | DAG file not mounted or parsing error | Confirm `airflow/dags/nyc_taxi_pipeline.py` exists and is mounted in compose |
-| Rowcount is 0 in bronze | Parquet path mismatch or file missing | Confirm local `data/raw/*.parquet` exists and is mounted into container |
+| Rowcount is 0 in bronze | Parquet path mismatch or file missing | Run `python scripts/download_data.py` then confirm `data/raw/*.parquet` exists and is mounted |
+| "No .parquet files found" error | Data not downloaded yet | Run `python scripts/download_data.py` to fetch from TLC website |
 | dbt builds but tables land in wrong schema | Profile schema mismatch | Update `dbt/profiles.yml` target schema, then rerun `dbt build` |
 
 ---
@@ -264,7 +277,7 @@ If your user/db differs, read it from `docker/compose.yml` and update the `-U` a
 
 | Skill area | Proof in this repo |
 |---|---|
-| Batch ingestion | Parquet -> Postgres bulk load with batching |
+| Batch ingestion | Multi-file Parquet -> Postgres bulk load with batching (12 months, ~30M+ rows) |
 | Warehousing | Bronze staging schema + analytics schema layout |
 | Transformations | dbt staging + marts, materializations, lineage |
 | Data quality | dbt schema tests + sanity checks |

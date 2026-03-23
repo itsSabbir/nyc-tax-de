@@ -13,7 +13,7 @@ version: 2
 models:
   - name: fact_trips
     description: >
-      Trip-level fact table for January 2024, built from stg_yellow_trips.
+      Trip-level fact table for full year 2024, built from stg_yellow_trips.
       Each row is one taxi trip with a generated trip_id as the primary key.
     columns:
       - name: trip_id

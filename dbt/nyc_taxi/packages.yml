@@ -1,3 +1,19 @@
+# =============================================================================
+# dbt Packages: Third-party dbt libraries
+# =============================================================================
+# Packages add reusable macros and tests to your dbt project. Think of them
+# like npm packages for dbt.
+#
+# After adding/changing packages, run:
+#   dbt deps    (downloads them into dbt_packages/ folder)
+#
+# dbt_utils is the most popular package — it gives us:
+#   - accepted_range test (is a value between min and max?)
+#   - expression_is_true test (does a SQL expression hold for all rows?)
+#   - surrogate_key macro (generate unique IDs)
+#   - and many more: https://github.com/dbt-labs/dbt-utils
+# =============================================================================
+
 packages:
   - package: dbt-labs/dbt_utils
-    version: 1.1.1
+    version: 1.1.1              # Pinned version for reproducibility

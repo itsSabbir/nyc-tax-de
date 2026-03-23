@@ -1,13 +1,32 @@
+# =============================================================================
+# dbt Sources: Declare where raw data lives in the database
+# =============================================================================
+# A "source" in dbt is a table that already exists in your database (created
+# outside of dbt — in our case, by the Python ingest script).
+#
+# By declaring it here, we get two things:
+#   1. We can reference it in SQL with {{ source('raw', 'yellow_trips_raw') }}
+#      instead of hardcoding "staging.yellow_trips_raw" everywhere
+#   2. dbt can run freshness checks and tests against it
+#
+# Think of this as dbt's way of saying "I know about this table, even though
+# I didn't create it."
+# =============================================================================
+
 version: 2
 
 sources:
-  - name: raw
-    schema: staging
+  - name: raw                              # Logical name we use in {{ source('raw', ...) }}
+    schema: staging                        # The actual Postgres schema where the table lives
     tables:
-      - name: yellow_trips_raw
-        description: "Raw NYC Yellow Taxi trips loaded from parquet into Postgres staging.yellow_trips_raw."
+      - name: yellow_trips_raw             # The actual table name in Postgres
+        description: >
+          Raw NYC Yellow Taxi trips loaded from parquet into Postgres by the
+          Python ingest script (ingest/load_yellow_to_pg.py). This is our
+          bronze layer — minimally cleaned, bulk-loaded data.
         columns:
+          # Basic tests on the raw source to catch ingest problems early
           - name: tpep_pickup_datetime
-            tests: [not_null]
+            tests: [not_null]              # Every row must have a pickup time
           - name: tpep_dropoff_datetime
-            tests: [not_null]
+            tests: [not_null]              # Every row must have a dropoff time

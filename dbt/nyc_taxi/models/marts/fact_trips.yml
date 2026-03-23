@@ -1,30 +1,44 @@
+# =============================================================================
+# Tests for fact_trips
+# =============================================================================
+# dbt tests are assertions that run after the model is built. If any test
+# fails, the "dbt build" command fails too — which stops the pipeline.
+#
+# These tests act as our "data contract": they define what we promise
+# downstream consumers about the shape and quality of this table.
+# =============================================================================
+
 version: 2
 
 models:
   - name: fact_trips
-    description: "Trip-level fact table (Jan 2024) modeled from stg_yellow_trips."
+    description: >
+      Trip-level fact table for January 2024, built from stg_yellow_trips.
+      Each row is one taxi trip with a generated trip_id as the primary key.
     columns:
       - name: trip_id
         tests:
-          - not_null
-          - unique
+          - not_null       # Every trip must have an ID
+          - unique         # No duplicate trip IDs (proves our hash is good)
 
       - name: pickup_ts
-        tests: [not_null]
+        tests: [not_null]  # Every trip must have a pickup timestamp
 
       - name: dropoff_ts
-        tests: [not_null]
+        tests: [not_null]  # Every trip must have a dropoff timestamp
 
       - name: total_amount
         tests:
+          # accepted_range checks that values fall within a min/max range.
+          # We imported this from the dbt_utils package (see packages.yml).
           - dbt_utils.accepted_range:
               arguments:
-                min_value: 0
-                inclusive: true
+                min_value: 0       # Total charged must be >= $0
+                inclusive: true     # $0.00 is allowed (e.g., voided trips)
 
       - name: trip_distance
         tests:
           - dbt_utils.accepted_range:
               arguments:
-                min_value: 0
+                min_value: 0       # Distance must be >= 0 miles
                 inclusive: true
